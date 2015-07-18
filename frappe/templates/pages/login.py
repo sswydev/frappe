@@ -6,10 +6,21 @@ import frappe
 import json
 import frappe.utils
 from frappe import _
+import urllib2
 
 class SignupDisabledError(frappe.PermissionError): pass
 
 no_cache = True
+
+WEIXIN_CORPID = ""
+WEIXIN_CORPSECRET = frappe.local.conf.wx_secret or ""
+
+WEIXIN_ACCESSTOKEN_ADDR = "https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid="
+WEIXIN_USERINFO_ADDR = "https://qyapi.weixin.qq.com/cgi-bin/user/getuserinfo?"
+WEIXIN_USERINFO_GET = "https://qyapi.weixin.qq.com/cgi-bin/user/get?"
+WEIXIN_OAUTH2_AUTHORIZE_ADDR = "https://open.weixin.qq.com/connect/oauth2/authorize?"
+WEIXIN_SENDMSG_ADDR = "https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token="
+WEIXIN_AUTH_SUCC = "https://qyapi.weixin.qq.com/cgi-bin/user/authsucc?access_token="
 
 def get_context(context):
 	if frappe.session.user != "Guest" and frappe.session.data.user_type=="System User":
@@ -62,24 +73,24 @@ oauth2_providers = {
 	},
 
 	"facebook": {
-		"flow_params": {
-			"name": "facebook",
-			"authorize_url": "https://www.facebook.com/dialog/oauth",
-			"access_token_url": "https://graph.facebook.com/oauth/access_token",
-			"base_url": "https://graph.facebook.com"
-		},
+        "flow_params": {
+            "name": "weixin",
+            "authorize_url": "https://open.weixin.qq.com/connect/oauth2/authorize",
+            "access_token_url": "https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+            "base_url": "https://qyapi.weixin.qq.com"
+        },
 
-		"redirect_uri": "/api/method/frappe.templates.pages.login.login_via_facebook",
+        "redirect_uri": "/api/method/frappe.templates.pages.login.login_via_weixin",
 
-		"auth_url_data": {
-			"display": "page",
-			"response_type": "code",
-			"scope": "email,public_profile"
-		},
+        "auth_url_data": {
+            "response_type": "code",
+            'scope': 'snsapi_base',
+            'appid': WEIXIN_CORPID,
+        },
 
-		# relative to base_url
-		"api_endpoint": "me"
-	}
+        # relative to base_url
+        "api_endpoint": "cgi-bin/user/getuserinfo"
+    }
 }
 
 def get_oauth_keys(provider):
@@ -176,18 +187,22 @@ def login_oauth_user(data=None, provider=None, email_id=None, key=None):
 		frappe.local.response["type"] = "redirect"
 		frappe.local.response["location"] = "/complete_signup?key=" + key
 		return
-
+	
 	user = data["email"]
-
+	result = 1
 	try:
-		update_oauth_user(user, data, provider)
+		result = update_oauth_user(user, data, provider)
 	except SignupDisabledError:
 		return frappe.respond_as_web_page("Signup is Disabled", "Sorry. Signup from Website is disabled.",
 			success=False, http_status_code=403)
 
+	if result ==0 :
+		return
+	
+	# frappe.local.login_manager.clear_cookies()
 	frappe.local.login_manager.user = user
 	frappe.local.login_manager.post_login()
-
+	
 	# redirect!
 	frappe.local.response["type"] = "redirect"
 
@@ -204,53 +219,96 @@ def update_oauth_user(user, data, provider):
 	save = False
 
 	if not frappe.db.exists("User", user):
-
+		frappe.respond_as_web_page("Not found user",
+				"<pre>please contract system manager.</pre>",
+				http_status_code=401)
+		response = frappe.website.render.render("message", http_status_code=401)
+		return 0
 		# is signup disabled?
 		if frappe.utils.cint(frappe.db.get_single_value("Website Settings", "disable_signup")):
 			raise SignupDisabledError
 
 		save = True
 		user = frappe.new_doc("User")
+		gender = ""
+		sex = (data.get("gender") or "")
+		if (sex == "1"):
+			gender = "Male"
+		elif (sex == "2"):
+			gender = "Female"
+		elif (sex == "3"):
+			gender = "Other"
+		
 		user.update({
 			"doctype":"User",
+			# "name":data["userid"],
 			"first_name": get_first_name(data),
 			"last_name": get_last_name(data),
 			"email": data["email"],
-			"gender": (data.get("gender") or "").title(),
-			"enabled": 1,
+			"gender": gender.title(),
+			"enabled": 0,
 			"new_password": frappe.generate_hash(data["email"]),
 			"location": data.get("location"),
-			"user_type": "Website User",
+			"user_type": "System User",
 			"user_image": data.get("picture") or data.get("avatar_url")
 		})
 
 	else:
 		user = frappe.get_doc("User", user)
-
-	if provider=="facebook" and not user.get("fb_userid"):
-		save = True
-		user.update({
-			"fb_username": data.get("username"),
-			"fb_userid": data["id"],
-			"user_image": "https://graph.facebook.com/{id}/picture".format(id=data["id"])
-		})
-
-	elif provider=="google" and not user.get("google_userid"):
-		save = True
-		user.google_userid = data["id"]
-
-	elif provider=="github" and not user.get("github_userid"):
-		save = True
-		user.github_userid = data["id"]
-		user.github_username = data["login"]
+		if (user.enabled == 0):
+			frappe.respond_as_web_page("Login failed",
+				"<pre>User is disabled!</pre>",
+				http_status_code=401)
+			response = frappe.website.render.render("message", http_status_code=401)
+			return 0
 
 	if save:
 		user.flags.ignore_permissions = True
 		user.flags.no_welcome_mail = True
 		user.save()
+		
+	return 1
 
 def get_first_name(data):
-	return data.get("first_name") or data.get("given_name") or data.get("name")
+	return data.get("first_name") or data.get("given_name") or data.get("name") or data.get("email")
 
 def get_last_name(data):
 	return data.get("last_name") or data.get("family_name")
+
+@frappe.whitelist(allow_guest=True)
+def login_via_weixin(code, appid, path):
+    provider = 'weixin'
+    WEIXIN_CORPID = appid
+
+    token = getAccessToken(appid)
+    url = WEIXIN_USERINFO_ADDR + "access_token=" + token + "&code=" + code
+    resp = urllib2.urlopen(url)
+    description = json.loads(resp.read())
+    userId = description.get('UserId', None)
+	
+    if userId == None:
+        frappe.throw(url)
+    else:
+    	#get user info
+    	geturl = WEIXIN_USERINFO_GET + "access_token=" + token + "&userid=" + userId
+    	inforesp = urllib2.urlopen(geturl)
+    	infojson = json.loads(inforesp.read())
+    	
+    	login_oauth_user({"userid":userId,"name":infojson.get("name",userId),"gender":infojson.get('gender'),"email":infojson.get('email')}, provider=provider)
+    	authSucc(token, userId)
+    location = "desk#" + path
+    frappe.local.response["location"] = location
+
+
+def authSucc(token, userid):
+    url_auth_suc = WEIXIN_AUTH_SUCC + token + "&userid=" + userid
+    resp = urllib2.urlopen(url_auth_suc)
+    description = json.loads(resp.read())
+
+
+def getAccessToken(appid):
+	addr = WEIXIN_ACCESSTOKEN_ADDR + appid + "&corpsecret=" + WEIXIN_CORPSECRET
+	resp = urllib2.urlopen(addr)
+	description = json.loads(resp.read())
+	token = description["access_token"]
+	return token
