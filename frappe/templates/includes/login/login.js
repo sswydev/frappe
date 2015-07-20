@@ -146,7 +146,7 @@ login.login_handlers = (function() {
 
 frappe.ready(function() {
 	login.bind_events();
-	login.getcompany();
+	// login.getcompany();
 	if (!window.location.hash) {
 		if (frappe.supports_pjax()) {
 			// preserve back button
