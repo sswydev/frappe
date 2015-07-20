@@ -353,6 +353,8 @@ def verify_password(password):
 
 @frappe.whitelist(allow_guest=True)
 def sign_up(email, full_name):
+	return frappe.respond_as_web_page("Signup is Disabled", "Sorry. Signup from Website is disabled.",
+			success=False, http_status_code=403)
 	user = frappe.db.get("User", {"email": email})
 	if user:
 		if user.disabled:
