@@ -88,6 +88,22 @@ login.call = function(args) {
 	});
 }
 
+login.getcompany = function() {
+	$.ajax({
+		url:'api/method/frappe.utils.query.get_companynames?fields=["name", "company_name"]',
+		statusCode: {
+			200: function(data) {
+				$.each(data.data, function(key, value) {  
+					 $('#login_company')
+					     .append($("<option></option>")
+					     .attr("value",value["name"])
+					     .text(value["company_name"])); 
+				});
+			}
+		}
+	});
+}
+
 login.login_handlers = (function() {
 	var get_error_handler = function(default_message) {
 		return function(xhr, data) {
@@ -130,7 +146,7 @@ login.login_handlers = (function() {
 
 frappe.ready(function() {
 	login.bind_events();
-
+	login.getcompany();
 	if (!window.location.hash) {
 		if (frappe.supports_pjax()) {
 			// preserve back button
